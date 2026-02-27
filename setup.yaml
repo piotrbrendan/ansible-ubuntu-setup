@@ -1,0 +1,324 @@
+---
+- name: Ubuntu 24.04 workstation bootstrap
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # Which user should receive shell/editor configuration and docker group membership
+    target_user: brendan
+
+    # Base packages installed via apt
+    apt_packages:
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - apt-transport-https
+      - software-properties-common
+      - git
+      - zsh
+      - neovim
+      - pipx
+      - python-is-python3
+      - python3-venv
+      - tmux
+      - libfuse2
+
+    # pipx packages
+    pipx_packages:
+      - uv
+
+    # Starship install
+    starship_bin_path: /usr/local/bin/starship
+
+    # Git identity
+    git_user_email: "piotrbrendan@gmail.com"
+
+    vscode_extensions:
+      - ms-python.python
+      - ms-toolsai.jupyter
+      - github.copilot-chat
+      - ms-toolsai.jupyter-renderers
+      - ms-toolsai.datawrangler
+      - anthropic.claude-code
+      - ms-azuretools.vscode-docker
+      - ms-vscode-remote.remote-ssh
+      - charliermarsh.ruff
+      - ms-pyright.pyright
+
+
+  pre_tasks:
+    - name: Assert Ubuntu 24.x
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_version is version("24.04", ">=")
+          - ansible_architecture in ["x86_64", "amd64"]
+        fail_msg: "This playbook is intended for Ubuntu 24.04+ only. Detected: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    - name: Assert amd64 architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_architecture in ["x86_64", "amd64"]
+        fail_msg: "This playbook is amd64-only. Detected architecture: {{ ansible_architecture }}"
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+  tasks:
+    - name: Debug
+      ansible.builtin.debug:
+        msg: "Target user: {{ target_user }}"
+    - name: Install base apt packages
+      ansible.builtin.apt:
+        name: "{{ apt_packages }}"
+        state: present
+
+    - name: Ensure target user exists
+      ansible.builtin.getent:
+        database: passwd
+        key: "{{ target_user }}"
+
+    - name: Derive target user home directory
+      ansible.builtin.set_fact:
+        target_user_home: "{{ getent_passwd[target_user][4] }}"
+
+    - name: Install pipx packages for target user
+      ansible.builtin.command: "pipx install {{ item }}"
+      args:
+        creates: "{{ target_user_home }}/.local/bin/{{ item }}"
+      become: true
+      become_user: "{{ target_user }}"
+      loop: "{{ pipx_packages }}"
+
+    - name: Ensure ~/.local/bin is on PATH (profile)
+      ansible.builtin.lineinfile:
+        path: "{{ target_user_home }}/.profile"
+        create: true
+        mode: "0644"
+        line: 'export PATH="$HOME/.local/bin:$PATH"'
+        insertafter: EOF
+        state: present
+      become: true
+      become_user: "{{ target_user }}"
+      when: pipx_packages | length > 0
+
+    - name: Ensure ~/.local/bin is on PATH (zshrc)
+      ansible.builtin.lineinfile:
+        path: "{{ target_user_home }}/.zshrc"
+        create: true
+        mode: "0644"
+        line: 'export PATH="$HOME/.local/bin:$PATH"'
+        insertafter: EOF
+        state: present
+      become: true
+      become_user: "{{ target_user }}"
+      when: pipx_packages | length > 0
+
+    - name: Install starship
+      ansible.builtin.command: "sh -c 'curl -fsSL https://starship.rs/install.sh | sh -s -- -y -b /usr/local/bin'"
+      args:
+        creates: "{{ starship_bin_path }}"
+
+    - name: Install Brave browser
+      block: 
+        - name: Download Brave GPG key
+          ansible.builtin.get_url:
+            url: https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+            dest: /usr/share/keyrings/brave-browser-archive-keyring.gpg
+            mode: "0644"
+
+        - name: Add Brave apt repository
+          ansible.builtin.apt_repository:
+            repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main"
+            filename: brave-browser-release
+            state: present
+
+        - name: Update apt cache 
+          ansible.builtin.apt:
+            update_cache: yes
+
+        - name: Brave Install
+          ansible.builtin.apt:
+            name: brave-browser
+            state: present
+
+    - name: Install Docker Engine (official repository)
+      block:
+        - name: Ensure Docker keyring directory exists
+          ansible.builtin.file:
+            path: /etc/apt/keyrings
+            state: directory
+            mode: "0755"
+
+        - name: Download Docker GPG key
+          ansible.builtin.get_url:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: "0644"
+
+        - name: Add Docker apt repository (amd64)
+          ansible.builtin.apt_repository:
+            repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            filename: docker
+            state: present
+
+        - name: Update apt cache after adding Docker repo
+          ansible.builtin.apt:
+            update_cache: true
+
+        - name: Install Docker packages
+          ansible.builtin.apt:
+            name:
+              - docker-ce
+              - docker-ce-cli
+              - containerd.io
+              - docker-buildx-plugin
+              - docker-compose-plugin
+            state: present
+
+        - name: Ensure docker service enabled and started
+          ansible.builtin.service:
+            name: docker
+            enabled: true
+            state: started
+
+        - name: Ensure docker group exists
+          ansible.builtin.group:
+            name: docker
+            state: present
+
+        - name: Add target user to docker group
+          ansible.builtin.user:
+            name: "{{ target_user }}"
+            groups: docker
+            append: true
+
+    - name: Configure zsh as default shell
+      ansible.builtin.user:
+        name: "{{ target_user }}"
+        shell: /usr/bin/zsh
+
+    - name: Configure starship in .zshrc
+      ansible.builtin.lineinfile:
+        path: "{{ target_user_home }}/.zshrc"
+        create: true
+        mode: "0644"
+        line: 'eval "$(starship init zsh)"'
+        insertafter: EOF
+        state: present
+      become: true
+      become_user: "{{ target_user }}"
+
+    - name: Set default editor to nvim in shell profiles
+      block:
+        - name: Export EDITOR/VISUAL in .profile
+          ansible.builtin.blockinfile:
+            path: "{{ target_user_home }}/.profile"
+            create: true
+            marker: "# {mark} ANSIBLE editor"
+            block: |
+              export EDITOR="nvim"
+              export VISUAL="nvim"
+          become: true
+          become_user: "{{ target_user }}"
+
+        - name: Export EDITOR/VISUAL in .zshrc
+          ansible.builtin.blockinfile:
+            path: "{{ target_user_home }}/.zshrc"
+            create: true
+            marker: "# {mark} ANSIBLE editor"
+            block: |
+              export EDITOR="nvim"
+              export VISUAL="nvim"
+          become: true
+          become_user: "{{ target_user }}"
+
+        - name: Set git core.editor to nvim
+          ansible.builtin.command: "git config --global core.editor nvim"
+          become: true
+          become_user: "{{ target_user }}"
+
+        - name: Read current git user.email
+          ansible.builtin.command: "git config --global --get user.email"
+          register: git_email_current
+          changed_when: false
+          failed_when: false
+          become: true
+          become_user: "{{ target_user }}"
+
+        - name: Set git user.email
+          ansible.builtin.command: "git config --global user.email {{ git_user_email | quote }}"
+          when: git_user_email | length > 0 and (git_email_current.stdout | default('')) != git_user_email
+          become: true
+          become_user: "{{ target_user }}"
+
+        - name: Best-effort set system 'editor' alternative to nvim
+          ansible.builtin.command: "update-alternatives --set editor /usr/bin/nvim"
+          register: editor_alternatives
+          changed_when: false
+          failed_when: false
+
+    - name: Configure Neovim keymaps
+      block:
+        - name: Ensure Neovim config directory exists
+          ansible.builtin.file:
+            path: "{{ target_user_home }}/.config/nvim"
+            state: directory
+            mode: "0755"
+          become: true
+          become_user: "{{ target_user }}"
+
+        - name: Manage keymaps in init.lua
+          ansible.builtin.blockinfile:
+            path: "{{ target_user_home }}/.config/nvim/init.lua"
+            create: true
+            mode: "0644"
+            marker: "-- {mark} ANSIBLE keymaps"
+            block: |
+              vim.keymap.set('i', 'jk', '<Esc>', { noremap = true, silent = true })
+          become: true
+          become_user: "{{ target_user }}"
+
+    - name: Get VsCode
+      block:  
+      - name: Download Microsoft GPG key
+        ansible.builtin.get_url:
+          url: https://packages.microsoft.com/keys/microsoft.asc
+          dest: /usr/share/keyrings/microsoft.asc
+          mode: "0644"
+
+      - name: Add Microsoft VSCode apt repository
+        ansible.builtin.apt_repository:
+          repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.asc] https://packages.microsoft.com/repos/vscode stable main"
+          filename: vscode
+          state: present
+
+      - name: Update apt cache 
+        ansible.builtin.apt:
+          update_cache: yes
+
+      - name: Install code
+        ansible.builtin.apt:
+          name: code
+          state: latest
+
+      - name: Get installed extensions
+        ansible.builtin.command: code --list-extensions
+        register: installed_extensions
+        changed_when: false
+        become: true
+        become_user: "{{ target_user }}"
+
+      - name: Install extensions
+        ansible.builtin.command: >
+          code --install-extension {{ item }} --force 
+        loop: "{{ vscode_extensions }}"
+        when: item not in installed_extensions.stdout_lines
+        become: true
+        become_user: "{{ target_user }}"
+
+  handlers: []
