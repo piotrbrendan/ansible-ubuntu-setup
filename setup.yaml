@@ -163,7 +163,7 @@
         - name: Add Docker apt repository (amd64)
           ansible.builtin.apt_repository:
             repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
-            filename: docker
+            filename: docker 
             state: present
 
         - name: Update apt cache after adding Docker repo
@@ -196,6 +196,32 @@
             name: "{{ target_user }}"
             groups: docker
             append: true
+
+    - name: Install Dropbox
+      block:
+        - name: Set Dropbox package version variable
+          ansible.builtin.set_fact:
+            dropbox_deb_version: "2026.01.15"
+
+        - name: Construct Dropbox download URL
+          ansible.builtin.set_fact:
+            dropbox_deb_url: "https://linux.dropbox.com/packages/ubuntu/dropbox_{{ dropbox_deb_version }}_amd64.deb"
+
+        - name: Download Dropbox .deb package
+          ansible.builtin.get_url:
+            url: "{{ dropbox_deb_url }}"
+            dest: "/tmp/dropbox_{{ dropbox_deb_version }}_amd64.deb"
+            mode: '0644'
+
+        - name: Install Dropbox .deb package
+          ansible.builtin.apt:
+            deb: "/tmp/dropbox_{{ dropbox_deb_version }}_amd64.deb"
+            state: present
+
+        - name: Clean up installer
+          ansible.builtin.file:
+            path: "/tmp/dropbox_{{ dropbox_deb_version }}_amd64.deb"
+            state: absent
 
     - name: Configure zsh as default shell
       ansible.builtin.user:
