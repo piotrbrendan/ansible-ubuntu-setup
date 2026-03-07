@@ -29,6 +29,15 @@
     pipx_packages:
       - uv
 
+    # NVM version to install
+    nvm_version: "0.40.4"
+
+    # Node.js LTS major version to install via NVM
+    node_major_version: 22
+
+    # Global npm packages (empty by default, add as needed)
+    npm_global_packages: []
+
     # Starship install
     starship_bin_path: /usr/local/bin/starship
 
@@ -196,6 +205,86 @@
             name: "{{ target_user }}"
             groups: docker
             append: true
+
+    - name: Install NVM and Node.js
+      block:
+        - name: Download NVM install script
+          ansible.builtin.get_url:
+            url: "https://raw.githubusercontent.com/nvm-sh/nvm/v{{ nvm_version }}/install.sh"
+            dest: /tmp/nvm_install.sh
+            mode: "0755"
+
+        - name: Run NVM install script
+          ansible.builtin.command: bash /tmp/nvm_install.sh
+          args:
+            creates: "{{ target_user_home }}/.nvm/nvm.sh"
+          become: true
+          become_user: "{{ target_user }}"
+          environment:
+            HOME: "{{ target_user_home }}"
+            NVM_DIR: "{{ target_user_home }}/.nvm"
+
+        - name: Clean up NVM install script
+          ansible.builtin.file:
+            path: /tmp/nvm_install.sh
+            state: absent
+
+        - name: Ensure NVM is sourced in .zshrc
+          ansible.builtin.blockinfile:
+            path: "{{ target_user_home }}/.zshrc"
+            create: true
+            mode: "0644"
+            marker: "# {mark} ANSIBLE nvm"
+            block: |
+              export NVM_DIR="$HOME/.nvm"
+              [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+              [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+          become: true
+          become_user: "{{ target_user }}"
+
+        - name: Check if target Node.js version is already installed
+          ansible.builtin.shell: |
+            . "{{ target_user_home }}/.nvm/nvm.sh"
+            nvm ls --no-colors | grep -q "v{{ node_major_version }}"
+          args:
+            executable: /bin/bash
+          become: true
+          become_user: "{{ target_user }}"
+          environment:
+            HOME: "{{ target_user_home }}"
+            NVM_DIR: "{{ target_user_home }}/.nvm"
+          register: node_version_check
+          changed_when: false
+          failed_when: false
+
+        - name: Install Node.js via NVM and set as default
+          ansible.builtin.shell: |
+            . "{{ target_user_home }}/.nvm/nvm.sh"
+            nvm install {{ node_major_version }}
+            nvm alias default {{ node_major_version }}
+          args:
+            executable: /bin/bash
+          become: true
+          become_user: "{{ target_user }}"
+          environment:
+            HOME: "{{ target_user_home }}"
+            NVM_DIR: "{{ target_user_home }}/.nvm"
+          when: node_version_check.rc != 0
+
+        - name: Install global npm packages
+          ansible.builtin.shell: |
+            . "{{ target_user_home }}/.nvm/nvm.sh"
+            npm install -g {{ item }}
+          args:
+            executable: /bin/bash
+          become: true
+          become_user: "{{ target_user }}"
+          environment:
+            HOME: "{{ target_user_home }}"
+            NVM_DIR: "{{ target_user_home }}/.nvm"
+          loop: "{{ npm_global_packages }}"
+          when: npm_global_packages | length > 0
+          changed_when: true
 
     - name: Install Dropbox
       block:
