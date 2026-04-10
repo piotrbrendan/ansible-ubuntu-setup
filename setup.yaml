@@ -24,6 +24,7 @@
       - python3-venv
       - tmux
       - libfuse2
+      - appimagelauncher
 
     # pipx packages
     pipx_packages:
@@ -55,6 +56,7 @@
       - ms-vscode-remote.remote-ssh
       - charliermarsh.ruff
       - ms-pyright.pyright
+      - asvetliakov.vscode-neovim
 
 
   pre_tasks:
